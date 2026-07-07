@@ -76,3 +76,38 @@ puts "st_unknown   " + (MastodonChannels.redis_channel_for_stream("user") == "")
 puts "st_rev       " + (MastodonChannels.stream_for_channel("timeline:public") == "public").to_s
 puts "st_rev_loc   " + (MastodonChannels.stream_for_channel("timeline:public:local") == "public:local").to_s
 puts "st_rev_unk   " + (MastodonChannels.stream_for_channel("other") == "").to_s
+
+# --- auth: token extraction precedence + charset gate + sql quoting --------
+
+tk = MastodonAuthToken.pick("qtok", "ptok", "Bearer btok")
+puts "tok_query    " + (tk == "qtok").to_s
+tk = MastodonAuthToken.pick("", "ptok", "Bearer btok")
+puts "tok_proto    " + (tk == "ptok").to_s
+tk = MastodonAuthToken.pick("", "", "Bearer btok")
+puts "tok_bearer   " + (tk == "btok").to_s
+tk = MastodonAuthToken.pick("", "", "Basic xyz")
+puts "tok_badhdr   " + (tk == "").to_s
+tk = MastodonAuthToken.pick("", "", "")
+puts "tok_none     " + (tk == "").to_s
+
+puts "shape_ok     " + MastodonAuthToken.valid_shape?("Abc123_-xyz").to_s
+puts "shape_quote  " + (!MastodonAuthToken.valid_shape?("a'b")).to_s
+puts "shape_space  " + (!MastodonAuthToken.valid_shape?("a b")).to_s
+puts "shape_empty  " + (!MastodonAuthToken.valid_shape?("")).to_s
+puts "shape_long   " + (!MastodonAuthToken.valid_shape?("a" * 256)).to_s
+
+puts "quote_plain  " + (MastodonAuthToken.sql_quote("abc") == "'abc'").to_s
+puts "quote_sq     " + (MastodonAuthToken.sql_quote("a'b''c") == "'a''b''''c'").to_s
+nul = [110, 0, 120].pack("C*")
+puts "quote_nul    " + (MastodonAuthToken.sql_quote(nul) == "'nx'").to_s
+
+# --- user channel mapping -----------------------------------------------------
+
+puts "chan_user    " + (MastodonChannels.channel_for("user", "42") == "timeline:42").to_s
+puts "chan_noacct  " + (MastodonChannels.channel_for("user", "") == "").to_s
+puts "chan_pub     " + (MastodonChannels.channel_for("public", "") == "timeline:public").to_s
+puts "uch_yes      " + MastodonChannels.user_channel?("timeline:42").to_s
+puts "uch_public   " + (!MastodonChannels.user_channel?("timeline:public")).to_s
+puts "uch_prefix   " + (!MastodonChannels.user_channel?("timeline:")).to_s
+puts "uch_other    " + (!MastodonChannels.user_channel?("subscribed:timeline:1")).to_s
+puts "rev_user     " + (MastodonChannels.stream_for_channel("timeline:42") == "user").to_s

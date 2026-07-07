@@ -36,6 +36,8 @@ end
 class StreamingHub
   def initialize
     @ps = RedisPubSub.new(NullRedisTransport.new)
+    @presence = RedisClientCore.new(NullRedisTransport.new)
+    @presence_on = false
     @counts = {}
     @heartbeat_seconds = 15
     @listener = RedisListener.new
@@ -55,7 +57,50 @@ class StreamingHub
 
   def connect(host, port)
     @ps = RedisPubSub.new(RedisTransport.new(host, port))
+    # Second, command-mode connection: the subscription connection can
+    # only speak (un)subscribe, and presence keys need SETEX.
+    @presence = RedisClientCore.new(RedisTransport.new(host, port))
+    @presence_on = true
     0
+  end
+
+  # subscribed:timeline:<id> markers with TTL, the signal Rails'
+  # FeedManager reads to decide whether to push into a user timeline.
+  # Set on first subscriber, refreshed at heartbeat cadence, left to
+  # lapse by TTL after the last unsubscribe (Node behavior).
+  def mark_presence(channel)
+    if @presence_on
+      if MastodonChannels.user_channel?(channel)
+        @presence.setex("subscribed:" + channel, 60, "1")
+      end
+    end
+    0
+  end
+
+  def refresh_presence
+    @counts.each do |channel, n|
+      if n > 0
+        mark_presence(channel)
+      end
+    end
+    0
+  end
+
+  def presence_loop
+    while true
+      Tep::Scheduler.pause(@heartbeat_seconds)
+      if Sock.sp_net_shutdown_requested != 0
+        return 0
+      end
+      refresh_presence
+    end
+    0
+  end
+
+  def spawn_presence
+    hub = self
+    f = Fiber.new { hub.presence_loop }
+    Tep::Scheduler.spawn_fiber(f)
   end
 
   def pubsub
@@ -98,6 +143,7 @@ class StreamingHub
     @counts[channel] = c + 1
     if c == 0
       @ps.subscribe_start(channel)
+      mark_presence(channel)
     end
     c + 1
   end

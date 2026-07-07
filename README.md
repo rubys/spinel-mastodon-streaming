@@ -1,24 +1,28 @@
 # mastodon_streaming (spinel-mastodon-streaming)
 
 A port of Mastodon's Node streaming server to spinel Ruby — one static
-binary in place of the Node/express/ws/ioredis process. Current slice:
-health endpoint, public SSE timelines, and the WebSocket client API
-(multiplexed subscribe/unsubscribe frames + the legacy ?stream= form),
-all fed from Redis.
+binary in place of the Node/express/ws/ioredis/pg process. Current
+slice: health, public timelines, and **authenticated user streams**
+over both SSE and the WebSocket client API, fed from Redis with OAuth
+tokens resolved against PostgreSQL (spinel-pg) and `subscribed:*`
+presence keys maintained with TTL refresh.
 
 Library and executable in one spin package (the structural version of
 Python's `if __name__ == "__main__"`):
 
 - `require "mastodon_streaming"` — the subsystem. `dispatch(req, res)`
   routes streaming requests (returns false for paths that aren't ours);
-  `boot(redis_host, redis_port)` wires the hub and parks its feed fiber.
+  `boot(redis_host, redis_port)` wires the hub and parks its feed +
+  presence fibers; `boot_db(host, port, db, user, pass)` wires the
+  OAuth resolver (optional — without it user streams 401).
   The library never owns the process: no sockets, signals, forks, or
   scheduler loops at this layer — that discipline is what lets the
   single-process endgame (app + jobs + streaming in one spinel binary)
   mount it next to its own work.
 - `bin/streaming.rb` — the standalone server: env parsing (PORT,
-  REDIS_HOST, REDIS_PORT), `Main.dispatch` delegation, tep's scheduled
-  server. `spin build` → `build/bin/streaming`.
+  REDIS_HOST, REDIS_PORT, DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASS),
+  `Main.dispatch` delegation, tep's scheduled server. `spin build` →
+  `build/bin/streaming`.
 
 ## Architecture
 
@@ -74,23 +78,36 @@ Porting this lane flushed four char-vs-byte bugs out of tep's WS codec
 mask-randomly) — fixed in roundhouse's vendored tep, which the Cable
 demo also rides.
 
-## Ledger (slice v0 exclusions)
+## Auth
 
-- **Auth / PG** — no OAuth token check; public timelines only. Arrives
-  with the spinel-pg client (SCRAM = sp_crypto's existing trio). The
-  browser client smuggles the token via Sec-WebSocket-Protocol — that
-  lands with auth too.
-- **User/hashtag/list/direct streams, presence keys** (`subscribed:*`
-  TTLs), **filters** — with auth.
+Node's token semantics: sources are the `access_token` query param,
+the `Sec-WebSocket-Protocol` header (the browser client smuggles the
+token as the WS subprotocol; the 101 echoes it), and
+`Authorization: Bearer` — in that precedence. Tokens resolve through
+one query against `oauth_access_tokens`/`users` (revoked excluded);
+a presented-but-invalid token is a 401 pre-upgrade, no token means an
+anonymous connection limited to public streams (`user` subscribes get
+an error frame). Tokens pass a strict urlsafe-base64 charset gate AND
+single-quote escaping before touching SQL (simple-query protocol;
+extended protocol is the planned fix). While a user timeline has
+subscribers, `subscribed:timeline:<id>` is kept alive with a 60s TTL
+refreshed at heartbeat cadence — the signal Rails' FeedManager reads.
+
+## Ledger (current exclusions)
+
+- **hashtag/list/direct streams, scope enforcement, filters** —
+  mapping + policy work now that account context exists.
 - **workers > 1** — single worker; per-worker hub boot needs a
   post-fork hook in tep's Scheduled server.
 - **Prometheus metrics, X-Request-Id, CORS headers** — with the
   conformance harness (Mastodon's own streaming integration tests +
   record/replay against Node), which is also what will police exact
   header/format parity.
-- Path deps on sibling checkouts (`../spinel-redis`,
-  `../roundhouse/runtime/spinel` for tep) until tep publishes as a spin
-  package.
+- **PG connection pooling / scheduler-parked DB reads** — one shared
+  blocking connection (exec is fiber-atomic; queries are sub-ms
+  localhost lookups). Pool + io_wait-parked transport when measured.
+- Path deps on sibling checkouts (`../spinel-redis`, `../spinel-pg`,
+  `../roundhouse/runtime/spinel` for tep).
 
 ## Spinel notes
 

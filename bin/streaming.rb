@@ -38,6 +38,21 @@ if redis_port_s != ""
   redis_port = redis_port_s.to_i
 end
 
+db_name = ENV["DB_NAME"].to_s
+if db_name != ""
+  db_host = ENV["DB_HOST"].to_s
+  if db_host == ""
+    db_host = "127.0.0.1"
+  end
+  db_port_s = ENV["DB_PORT"].to_s
+  db_port = 5432
+  if db_port_s != ""
+    db_port = db_port_s.to_i
+  end
+  db_user = ENV["DB_USER"].to_s
+  db_pass = ENV["DB_PASS"].to_s
+  MastodonStreaming.boot_db(db_host, db_port, db_name, db_user, db_pass)
+end
 MastodonStreaming.boot(redis_host, redis_port)
 puts "mastodon-streaming listening on :" + port.to_s + " (redis " + redis_host + ":" + redis_port.to_s + ")"
 STDOUT.flush

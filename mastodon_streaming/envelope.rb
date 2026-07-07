@@ -181,12 +181,46 @@ module MastodonChannels
     ""
   end
 
+  # Account-aware mapping: "user" needs the resolved account id.
+  def self.channel_for(stream, account_id)
+    if stream == "user"
+      if account_id.bytesize == 0
+        return ""
+      end
+      return "timeline:" + account_id
+    end
+    redis_channel_for_stream(stream)
+  end
+
+  # A per-user timeline channel: "timeline:" + digits.
+  def self.user_channel?(channel)
+    prefix = "timeline:"
+    if channel.bytesize <= prefix.bytesize
+      return false
+    end
+    if channel.byteslice(0, prefix.bytesize) != prefix
+      return false
+    end
+    i = prefix.bytesize
+    while i < channel.bytesize
+      b = channel.getbyte(i)
+      if b < 48 || b > 57
+        return false
+      end
+      i = i + 1
+    end
+    true
+  end
+
   def self.stream_for_channel(channel)
     if channel == "timeline:public"
       return "public"
     end
     if channel == "timeline:public:local"
       return "public:local"
+    end
+    if MastodonChannels.user_channel?(channel)
+      return "user"
     end
     ""
   end
@@ -243,5 +277,62 @@ module MastodonWsEnvelope
   def self.build(stream, event, payload)
     "{\"stream\":[" + json_quote(stream) + "],\"event\":" +
       json_quote(event) + ",\"payload\":" + json_quote(payload) + "}"
+  end
+end
+
+module MastodonAuthToken
+  # Pure precedence combiner; every source arrives as a plain string
+  # ("" = absent), so the parity lane covers it.
+  def self.pick(query_token, ws_protocol, bearer_header)
+    if query_token.bytesize > 0
+      return query_token
+    end
+    if ws_protocol.bytesize > 0
+      return ws_protocol
+    end
+    h = bearer_header
+    if h.bytesize > 7
+      if h.byteslice(0, 7) == "Bearer "
+        return h.byteslice(7, h.bytesize - 7)
+      end
+    end
+    ""
+  end
+
+  # Doorkeeper tokens are urlsafe-base64: [A-Za-z0-9_-]. Anything else
+  # is rejected before it can reach SQL.
+  def self.valid_shape?(token)
+    n = token.bytesize
+    if n == 0 || n > 255
+      return false
+    end
+    i = 0
+    while i < n
+      b = token.getbyte(i)
+      ok = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 45 || b == 95
+      if !ok
+        return false
+      end
+      i = i + 1
+    end
+    true
+  end
+
+  # Single-quote doubling for SQL string literals; NUL bytes dropped.
+  # Belt to valid_shape?'s suspenders.
+  def self.sql_quote(s)
+    out = "'"
+    i = 0
+    n = s.bytesize
+    while i < n
+      b = s.getbyte(i)
+      if b == 39
+        out = out + "''"
+      elsif b != 0
+        out = out + s.byteslice(i, 1)
+      end
+      i = i + 1
+    end
+    out + "'"
   end
 end

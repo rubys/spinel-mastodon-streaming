@@ -16,8 +16,17 @@ class WsSession
   def initialize(driver, hub)
     @driver = driver
     @hub = hub
+    @account_id = ""
     @streams = [""]
     @streams.delete_at(0)      # type-seed StrArray, start empty
+  end
+
+  def account_id
+    @account_id
+  end
+
+  def set_account(account_id)
+    @account_id = account_id.to_s
   end
 
   def driver
@@ -44,9 +53,13 @@ class WsSession
     if subscribed?(s)
       return 0                 # duplicate subscribe: no-op, like Node
     end
-    chan = MastodonChannels.redis_channel_for_stream(s)
+    chan = MastodonChannels.channel_for(s, @account_id)
     if chan.bytesize == 0
-      @driver.text("{\"error\":\"Unknown stream type\"}")
+      if s == "user"
+        @driver.text("{\"error\":\"Unauthorized\"}")
+      else
+        @driver.text("{\"error\":\"Unknown stream type\"}")
+      end
       return -1
     end
     Tep::Broadcast.subscribe_ws("ws:" + chan, @driver.fd)
@@ -60,7 +73,7 @@ class WsSession
     if !subscribed?(s)
       return 0
     end
-    chan = MastodonChannels.redis_channel_for_stream(s)
+    chan = MastodonChannels.channel_for(s, @account_id)
     Tep::Broadcast.unsubscribe_topic_fd("ws:" + chan, @driver.fd)
     @hub.release(chan)
     i = @streams.length - 1
@@ -78,7 +91,7 @@ class WsSession
   def release_all
     i = 0
     while i < @streams.length
-      chan = MastodonChannels.redis_channel_for_stream(@streams[i])
+      chan = MastodonChannels.channel_for(@streams[i], @account_id)
       if chan.bytesize > 0
         @hub.release(chan)
       end
@@ -182,8 +195,29 @@ module MastodonWs
       res.body = "invalid websocket upgrade"
       return true
     end
+    # Connection-level auth, Node semantics: a presented token must
+    # resolve (401 pre-upgrade otherwise); no token means an anonymous
+    # connection that can only subscribe public streams.
+    token = MastodonStreaming.token_of(req)
+    account = ""
+    if token.bytesize > 0
+      account = MastodonStreaming::AUTH.resolve(token)
+      if account.bytesize == 0
+        res.status = 401
+        res.headers["Content-Type"] = "application/json"
+        res.body = "{\"error\":\"Invalid access token\"}"
+        return true
+      end
+    end
     drv = Tep::WebSocket::Driver.new(0)
     session = WsSession.new(drv, MastodonStreaming::HUB)
+    session.set_account(account)
+    # The browser client smuggles the token as the WS subprotocol and
+    # requires the 101 to echo it (Node does the same).
+    proto = MastodonStreaming.header_of(req, "sec-websocket-protocol")
+    if proto.bytesize > 0
+      drv.set_subprotocol(proto)
+    end
 
     on_open = MastodonWs::WsOpen.new
     on_open.session = session

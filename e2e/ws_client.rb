@@ -2,7 +2,10 @@
 # Doubles as an independent conformance probe: nothing here shares code
 # with the server.
 #
-#   ruby e2e/ws_client.rb PORT PATH SEND_JSON READ_SECONDS
+#   ruby e2e/ws_client.rb PORT PATH SEND_JSON READ_SECONDS [PROTOCOL]
+#
+# PROTOCOL (optional) is sent as Sec-WebSocket-Protocol — Mastodon's
+# token-smuggling channel — and the 101 must echo it (exit 3 if not).
 #
 # Handshakes, then sends each "|"-separated part of SEND_JSON as a
 # masked TEXT frame (first immediately, the rest 1s apart; "" sends
@@ -17,21 +20,27 @@ port = Integer(ARGV[0])
 path = ARGV[1]
 send_json = ARGV[2].to_s
 read_seconds = Float(ARGV[3] || "1")
+protocol = ARGV[4].to_s
 
 sock = TCPSocket.new("127.0.0.1", port)
 key = Base64.strict_encode64(Random.bytes(16))
-sock.write("GET #{path} HTTP/1.1\r\n" \
-           "Host: 127.0.0.1:#{port}\r\n" \
-           "Upgrade: websocket\r\n" \
-           "Connection: Upgrade\r\n" \
-           "Sec-WebSocket-Key: #{key}\r\n" \
-           "Sec-WebSocket-Version: 13\r\n\r\n")
+req = "GET #{path} HTTP/1.1\r\n" \
+      "Host: 127.0.0.1:#{port}\r\n" \
+      "Upgrade: websocket\r\n" \
+      "Connection: Upgrade\r\n" \
+      "Sec-WebSocket-Key: #{key}\r\n"
+req += "Sec-WebSocket-Protocol: #{protocol}\r\n" if protocol != ""
+req += "Sec-WebSocket-Version: 13\r\n\r\n"
+sock.write(req)
 
 head = +""
 head << sock.readpartial(4096) until head.include?("\r\n\r\n")
 exit 2 unless head.start_with?("HTTP/1.1 101")
 expected = Base64.strict_encode64(Digest::SHA1.digest(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
 exit 2 unless head.include?(expected)
+if protocol != ""
+  exit 3 unless head.include?("Sec-WebSocket-Protocol: #{protocol}")
+end
 
 def send_text(sock, payload)
   mask = Random.bytes(4)
