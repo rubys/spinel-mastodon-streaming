@@ -12,6 +12,7 @@ require "tep"
 require_relative "mastodon_streaming/envelope"
 require_relative "mastodon_streaming/hub"
 require_relative "mastodon_streaming/sse"
+require_relative "mastodon_streaming/ws"
 
 module MastodonStreaming
   HUB = StreamingHub.new
@@ -48,6 +49,14 @@ module MastodonStreaming
       res.headers["Content-Type"] = "text/plain"
       res.body = "OK"
       return true
+    end
+    # The WS client API lives at the prefix root (multiplexed streams
+    # via subscribe/unsubscribe frames, or the legacy ?stream= form).
+    if p == PREFIX
+      return MastodonWs.upgrade(req, res)
+    end
+    if p == PREFIX + "/"
+      return MastodonWs.upgrade(req, res)
     end
     channel = MastodonChannels.redis_channel_for_path(p)
     if channel.bytesize > 0

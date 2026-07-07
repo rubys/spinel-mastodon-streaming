@@ -49,3 +49,30 @@ puts "ch_public    " + (MastodonChannels.redis_channel_for_path("/api/v1/streami
 puts "ch_local     " + (MastodonChannels.redis_channel_for_path("/api/v1/streaming/public/local") == "timeline:public:local").to_s
 puts "ch_unknown   " + (MastodonChannels.redis_channel_for_path("/api/v1/streaming/user") == "").to_s
 puts "ch_other     " + (MastodonChannels.redis_channel_for_path("/health") == "").to_s
+
+# --- WS lane: json_quote + double-encoded envelope (Node parity) -----------
+
+q = MastodonWsEnvelope.json_quote("plain")
+puts "jq_plain     " + (q == "\"plain\"").to_s
+q = MastodonWsEnvelope.json_quote("a\"b\\c")
+puts "jq_escapes   " + (q == "\"a\\\"b\\\\c\"").to_s
+q = MastodonWsEnvelope.json_quote("l1\nl2\r\tend")
+puts "jq_ctl       " + (q == "\"l1\\nl2\\r\\tend\"").to_s
+q = MastodonWsEnvelope.json_quote([1].pack("C*") + "x")
+puts "jq_u0001     " + (q == "\"\\u0001x\"").to_s
+q = MastodonWsEnvelope.json_quote("héllo→")
+puts "jq_utf8      " + (q == "\"héllo→\"").to_s
+
+env = MastodonWsEnvelope.build("public", "update", "{\"id\":\"1\"}")
+puts "ws_env       " + (env == "{\"stream\":[\"public\"],\"event\":\"update\",\"payload\":\"{\\\"id\\\":\\\"1\\\"}\"}").to_s
+env = MastodonWsEnvelope.build("public", "delete", "12345")
+puts "ws_env_del   " + (env == "{\"stream\":[\"public\"],\"event\":\"delete\",\"payload\":\"12345\"}").to_s
+
+# --- stream-name mappings ---------------------------------------------------
+
+puts "st_pub       " + (MastodonChannels.redis_channel_for_stream("public") == "timeline:public").to_s
+puts "st_local     " + (MastodonChannels.redis_channel_for_stream("public:local") == "timeline:public:local").to_s
+puts "st_unknown   " + (MastodonChannels.redis_channel_for_stream("user") == "").to_s
+puts "st_rev       " + (MastodonChannels.stream_for_channel("timeline:public") == "public").to_s
+puts "st_rev_loc   " + (MastodonChannels.stream_for_channel("timeline:public:local") == "public:local").to_s
+puts "st_rev_unk   " + (MastodonChannels.stream_for_channel("other") == "").to_s

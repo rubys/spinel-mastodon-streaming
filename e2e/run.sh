@@ -72,6 +72,40 @@ grep -q '^data: 102$' "$OUT/sse2.out" || fail "delete payload should be the bare
 echo "ok   disconnect survival + bare delete id"
 
 kill $CURL2 2>/dev/null; wait $CURL2 2>/dev/null
+
+# --- WebSocket API -----------------------------------------------------
+
+# A: subscribe frame, full window. B: legacy ?stream= form, killed -9
+# mid-stream. C: unknown stream -> error frame, no events. D: subscribe
+# then unsubscribe 1s later -> gets the first event only.
+ruby e2e/ws_client.rb $PORT /api/v1/streaming '{"type":"subscribe","stream":"public"}' 3 > "$OUT/ws_a.out" 2>/dev/null &
+WSA=$!
+ruby e2e/ws_client.rb $PORT '/api/v1/streaming?stream=public' '' 3 > "$OUT/ws_b.out" 2>/dev/null &
+WSB=$!
+ruby e2e/ws_client.rb $PORT /api/v1/streaming '{"type":"subscribe","stream":"nope"}' 3 > "$OUT/ws_c.out" 2>/dev/null &
+WSC=$!
+ruby e2e/ws_client.rb $PORT /api/v1/streaming '{"type":"subscribe","stream":"public"}|{"type":"unsubscribe","stream":"public"}' 3 > "$OUT/ws_d.out" 2>/dev/null &
+WSD=$!
+sleep 0.6
+redis-cli -p $RPORT publish timeline:public '{"event":"update","payload":{"id":"201","content":"ws"},"queued_at":1}' >/dev/null
+sleep 0.6
+kill -9 $WSB 2>/dev/null; wait $WSB 2>/dev/null
+sleep 0.6
+redis-cli -p $RPORT publish timeline:public '{"event":"delete","payload":"202"}' >/dev/null
+wait $WSA 2>/dev/null; wait $WSC 2>/dev/null; wait $WSD 2>/dev/null
+
+UPD='{"stream":["public"],"event":"update","payload":"{\"id\":\"201\",\"content\":\"ws\"}"}'
+DEL='{"stream":["public"],"event":"delete","payload":"202"}'
+grep -qF "$UPD" "$OUT/ws_a.out" || fail "ws A missing double-encoded update"
+grep -qF "$DEL" "$OUT/ws_a.out" || fail "ws A missing delete after peer was killed"
+grep -qF "$UPD" "$OUT/ws_b.out" || fail "ws B (query form) missing update"
+grep -qF '{"error":"Unknown stream type"}' "$OUT/ws_c.out" || fail "ws C missing error frame"
+grep -qF "$UPD" "$OUT/ws_c.out" && fail "ws C received events for unknown stream"
+grep -qF "$UPD" "$OUT/ws_d.out" || fail "ws D missing pre-unsubscribe update"
+grep -qF "$DEL" "$OUT/ws_d.out" && fail "ws D received event after unsubscribe"
+kill -0 $SERVER_PID 2>/dev/null || fail "server died during ws phase"
+echo "ok   ws subscribe/query/unsubscribe/error + kill survival"
+
 # TERM first (accept fiber exits <=1s; pump fibers at heartbeat cadence),
 # then -9 as the bounded fallback so the harness never hangs on shutdown.
 kill $SERVER_PID 2>/dev/null

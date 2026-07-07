@@ -66,8 +66,12 @@ class StreamingHub
     @listener
   end
 
-  # One Redis message -> one chunk-framed SSE event on the broadcast
-  # topic. Chunk framing: <hex len>CRLF <bytes> CRLF.
+  # One Redis message -> both client lanes:
+  #   sse:<channel> — SSE bytes pre-framed as one chunked-encoding
+  #     chunk (raw-mode subscribers inside chunked responses);
+  #   ws:<channel>  — the WS client envelope (payload double-encoded,
+  #     Node parity); subscribers registered via subscribe_ws, so
+  #     Broadcast applies the TEXT framing.
   # .to_s at entry: these arrive through stored listener blocks, whose
   # params come in poly — the byte-level scanner needs real Strings
   # (String#to_s is identity, so it costs nothing when already typed).
@@ -79,6 +83,10 @@ class StreamingHub
     sse = "event: " + ev + "\n" + "data: " + pl + "\n\n"
     framed = sse.bytesize.to_s(16) + "\r\n" + sse + "\r\n"
     Tep::Broadcast.publish("sse:" + ch, framed)
+    stream = MastodonChannels.stream_for_channel(ch)
+    if stream.bytesize > 0
+      Tep::Broadcast.publish("ws:" + ch, MastodonWsEnvelope.build(stream, ev, pl))
+    end
   end
 
   # First client in subscribes the Redis channel. Returns the refcount.

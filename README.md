@@ -1,8 +1,10 @@
 # mastodon_streaming (spinel-mastodon-streaming)
 
 A port of Mastodon's Node streaming server to spinel Ruby — one static
-binary in place of the Node/express/ws/ioredis process. Slice v0:
-health endpoint + public SSE timelines fed from Redis.
+binary in place of the Node/express/ws/ioredis process. Current slice:
+health endpoint, public SSE timelines, and the WebSocket client API
+(multiplexed subscribe/unsubscribe frames + the legacy ?stream= form),
+all fed from Redis.
 
 Library and executable in one spin package (the structural version of
 Python's `if __name__ == "__main__"`):
@@ -27,11 +29,20 @@ Rails/Sidekiq ──publish──▶ Redis timeline:* channels
                      StreamingHub feed fiber        (Tep::Scheduler.io_wait)
                               │ envelope split: event / raw payload
                               ▼
-              Tep::Broadcast "sse:<channel>" topics (chunk-pre-framed SSE bytes)
-                              │ raw fd fan-out
-                              ▼
-                   SSE client connections           (tep chunked streaming)
+         Tep::Broadcast topics: "sse:<ch>" (chunk-pre-framed SSE bytes)
+                                "ws:<ch>"  (double-encoded WS envelopes)
+                              │ raw fd fan-out        │ WS TEXT-framed fan-out
+                              ▼                       ▼
+                   SSE client connections    WS client connections
 ```
+
+The WS lane speaks Mastodon's client protocol: connect to
+`/api/v1/streaming` (optionally `?stream=public`), drive it with
+`{"type":"subscribe","stream":"public"}` frames, receive
+`{"stream":["public"],"event":"update","payload":"{\"id\":...}"}` —
+payload double-encoded as a JSON string, delete IDs bare, matching
+Node. Unknown streams get an `{"error":"Unknown stream type"}` frame.
+Per-connection keepalive pings ride their own fibers (term-flag aware).
 
 Channel subscriptions are refcounted on demand (first client in →
 SUBSCRIBE, last out → UNSUBSCRIBE), as in the Node server. Client
@@ -52,15 +63,23 @@ sh e2e/run.sh    # builds, boots redis + the binary, drives it with curl
 
 e2e asserts: health body, 404s, event delivery to two concurrent SSE
 clients, `:)` hello + SSE framing, disconnect survival with continued
-delivery to the survivor, and bare delete IDs.
+delivery to the survivor, bare delete IDs — and, on the WS side
+(driven by `e2e/ws_client.rb`, a stdlib-only RFC 6455 client that
+shares no code with the server): frame-subscribe, the `?stream=` query
+form, unsubscribe taking effect between events, error frames for
+unknown streams, and a `kill -9`'d client not disturbing the rest.
+
+Porting this lane flushed four char-vs-byte bugs out of tep's WS codec
+(masked frames are arbitrary binary; char-count arithmetic flakes
+mask-randomly) — fixed in roundhouse's vendored tep, which the Cable
+demo also rides.
 
 ## Ledger (slice v0 exclusions)
 
 - **Auth / PG** — no OAuth token check; public timelines only. Arrives
-  with the spinel-pg client (SCRAM = sp_crypto's existing trio).
-- **WebSocket API** — SSE only. tep's WS stack (handshake/driver/
-  Connection) is already in the graph; the WS envelope + per-connection
-  stream multiplexing is the next slice.
+  with the spinel-pg client (SCRAM = sp_crypto's existing trio). The
+  browser client smuggles the token via Sec-WebSocket-Protocol — that
+  lands with auth too.
 - **User/hashtag/list/direct streams, presence keys** (`subscribed:*`
   TTLs), **filters** — with auth.
 - **workers > 1** — single worker; per-worker hub boot needs a

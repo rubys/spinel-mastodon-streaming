@@ -168,6 +168,29 @@ end
 # timelines. The full vocabulary (user:, hashtag:, list:, direct)
 # arrives with auth (needs PG) — ledgered in the README.
 module MastodonChannels
+  # WS subscribe frames carry stream names ("public"); Redis carries
+  # channel names ("timeline:public"). Both directions needed: frames
+  # map forward, fan-out maps back.
+  def self.redis_channel_for_stream(stream)
+    if stream == "public"
+      return "timeline:public"
+    end
+    if stream == "public:local"
+      return "timeline:public:local"
+    end
+    ""
+  end
+
+  def self.stream_for_channel(channel)
+    if channel == "timeline:public"
+      return "public"
+    end
+    if channel == "timeline:public:local"
+      return "public:local"
+    end
+    ""
+  end
+
   def self.redis_channel_for_path(path)
     if path == "/api/v1/streaming/public"
       return "timeline:public"
@@ -176,5 +199,49 @@ module MastodonChannels
       return "timeline:public:local"
     end
     ""
+  end
+end
+
+# WS-lane encoding, kept pure (no tep dependency) so the parity lane
+# covers it under both runtimes. The WS client API double-encodes:
+# payload is a JSON *string* whose content is the payload JSON —
+# {"stream":["public"],"event":"update","payload":"{\"id\":\"1\"}"} —
+# matching the Node server.
+module MastodonWsEnvelope
+  # JSON string literal for s (quotes included): escapes backslash,
+  # quote, and control bytes; multi-byte UTF-8 passes through raw.
+  def self.json_quote(s)
+    out = "\""
+    i = 0
+    n = s.bytesize
+    while i < n
+      b = s.getbyte(i)
+      if b == 34                       # '"'
+        out = out + "\\\""
+      elsif b == 92                    # '\'
+        out = out + "\\\\"
+      elsif b == 10
+        out = out + "\\n"
+      elsif b == 13
+        out = out + "\\r"
+      elsif b == 9
+        out = out + "\\t"
+      elsif b < 32
+        hex = b.to_s(16)
+        if hex.bytesize == 1
+          hex = "0" + hex
+        end
+        out = out + "\\u00" + hex
+      else
+        out = out + s.byteslice(i, 1)
+      end
+      i = i + 1
+    end
+    out + "\""
+  end
+
+  def self.build(stream, event, payload)
+    "{\"stream\":[" + json_quote(stream) + "],\"event\":" +
+      json_quote(event) + ",\"payload\":" + json_quote(payload) + "}"
   end
 end
