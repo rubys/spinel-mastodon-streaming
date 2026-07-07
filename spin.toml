@@ -1,0 +1,15 @@
+[package]
+name = "mastodon_streaming"
+version = "0.0.1"
+
+# Library + executable in one package (spin's structural answer to
+# Python's `if __name__ == "__main__"`): require "mastodon_streaming"
+# embeds the subsystem; bin/streaming.rb is the standalone server.
+
+[dependencies]
+# Path deps to sibling checkouts for now: tep is not yet published as a
+# spin package (it is roundhouse's vendored copy of upstream tep), and
+# pinning redis to the local checkout keeps the two halves co-developed.
+# Both become index constraints when tep publishes.
+redis = { path = "../spinel-redis" }
+tep = { path = "../roundhouse/runtime/spinel" }
